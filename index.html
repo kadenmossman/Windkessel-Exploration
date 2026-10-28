@@ -1,0 +1,316 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Windkessel Model Explorer</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: Arial, sans-serif;
+    margin: 0;
+    padding: 24px;
+    color: #000;
+    background: #fff;
+  }
+  h1, h2, h3, p, label, span { color: #000; }
+  h1 { margin-top: 0; }
+  .controls {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 16px;
+    margin: 20px 0;
+  }
+  .control {
+    border: 1px solid #ccc;
+    border-radius: 8px;
+    padding: 12px;
+  }
+  .control label {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    font-weight: bold;
+    margin-bottom: 8px;
+  }
+  input[type="range"] { width: 100%; }
+  .graphs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 20px;
+  }
+  .graph {
+    border: 1px solid #ccc;
+    border-radius: 8px;
+    padding: 12px;
+    min-width: 0;
+  }
+  canvas { width: 100%; height: 300px; display: block; }
+  .legend { font-size: 14px; margin: 8px 0; }
+  .line-key {
+    display: inline-block;
+    width: 22px;
+    border-top: 3px solid;
+    margin: 0 6px 3px 12px;
+  }
+  .blue { border-color: #1769aa; }
+  .red { border-color: #c62828; }
+  .stats {
+    margin-top: 20px;
+    padding: 14px;
+    border: 1px solid #ccc;
+    border-radius: 8px;
+    line-height: 1.8;
+  }
+  @media (max-width: 750px) {
+    .graphs { grid-template-columns: 1fr; }
+    body { padding: 12px; }
+  }
+</style>
+</head>
+<body>
+<h1>Windkessel Model Explorer</h1>
+<p>Compare arterial pressure and flow with and without inertance.</p>
+
+<div class="controls">
+  <div class="control">
+    <label>Resistance (R) <span id="rVal">1.2</span></label>
+    <input id="r" type="range" min="0.5" max="3" step="0.1" value="1.2">
+  </div>
+  <div class="control">
+    <label>Compliance (C) <span id="cVal">2.0</span></label>
+    <input id="c" type="range" min="0.5" max="4" step="0.1" value="2">
+  </div>
+  <div class="control">
+    <label>Inertance (L) <span id="lVal">0.3</span></label>
+    <input id="l" type="range" min="0.05" max="1" step="0.05" value="0.3">
+  </div>
+  <div class="control">
+    <label>Venous pressure (mmHg) <span id="pvVal">5</span></label>
+    <input id="pv" type="range" min="0" max="15" step="1" value="5">
+  </div>
+  <div class="control">
+    <label>Stroke volume (mL) <span id="svVal">70</span></label>
+    <input id="sv" type="range" min="30" max="150" step="5" value="70">
+  </div>
+  <div class="control">
+    <label>Ejection (% of cycle) <span id="edVal">35%</span></label>
+    <input id="ed" type="range" min="20" max="50" step="1" value="35">
+  </div>
+  <div class="control">
+    <label>Heart rate (bpm) <span id="hrVal">75</span></label>
+    <input id="hr" type="range" min="40" max="140" step="1" value="75">
+  </div>
+</div>
+
+<div class="graphs">
+  <section class="graph">
+    <h2>Arterial Pressure</h2>
+    <div class="legend">
+      <span class="line-key blue"></span>Without Inertance
+      <span class="line-key red"></span>With Inertance
+    </div>
+    <canvas id="pressureChart"></canvas>
+    <p>Y-axis: pressure (mmHg)</p>
+  </section>
+  <section class="graph">
+    <h2>Outflow</h2>
+    <div class="legend">
+      <span class="line-key blue"></span>Without Inertance
+      <span class="line-key red"></span>With Inertance
+    </div>
+    <canvas id="flowChart"></canvas>
+    <p>Y-axis: flow (mL/s)</p>
+  </section>
+</div>
+
+<div class="stats" id="stats"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const controls = ["r", "c", "l", "pv", "sv", "ed", "hr"];
+
+const FIXED = {
+  timeMin: 0,
+  timeMax: 4,
+  pressureMin: 0,
+  pressureMax: 200,
+  flowMin: 0,
+  flowMax: 1000
+};
+
+function readValues() {
+  return {
+    R: +$("r").value,
+    C: +$("c").value,
+    L: +$("l").value,
+    Pv: +$("pv").value,
+    SV: +$("sv").value,
+    ejectionFraction: +$("ed").value / 100,
+    HR: +$("hr").value
+  };
+}
+
+function simulate(v) {
+  const dt = 0.0005;
+  const duration = FIXED.timeMax;
+  const n = Math.floor(duration / dt);
+  const T = 60 / v.HR;
+  const eject = v.ejectionFraction * T;
+
+  let P2 = v.Pv, P3 = v.Pv, Q3 = 0;
+  const data = { t: [], p2: [], p3: [], q2: [], q3: [] };
+
+  for (let i = 0; i <= n; i++) {
+    const t = i * dt;
+    const phase = t % T;
+    const Qin = phase < eject
+      ? Math.PI * v.SV / (2 * eject) *
+        Math.sin(Math.PI * phase / eject)
+      : 0;
+
+    const Q2 = (P2 - v.Pv) / v.R;
+
+    // 2-element model: resistance + compliance
+    P2 += dt * (Qin - Q2) / v.C;
+
+    // 3-element model: resistance + inertance + compliance
+    const Qout3 = Q3;
+    Q3 += dt * ((P3 - v.Pv) - v.R * Q3) / v.L;
+    P3 += dt * (Qin - Qout3) / v.C;
+
+    if (i % 20 === 0) {
+      data.t.push(t);
+      data.p2.push(P2);
+      data.p3.push(P3);
+      data.q2.push(Q2);
+      data.q3.push(Q3);
+    }
+  }
+  return data;
+}
+
+function drawChart(canvasId, times, series, yMin, yMax, yLabel) {
+  const canvas = $(canvasId);
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = Math.round(rect.width * dpr);
+  canvas.height = Math.round(300 * dpr);
+
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const W = rect.width, H = 300;
+  const pad = { left: 54, right: 14, top: 16, bottom: 36 };
+  const plotW = W - pad.left - pad.right;
+  const plotH = H - pad.top - pad.bottom;
+
+  const x = t => pad.left +
+    (t - FIXED.timeMin) / (FIXED.timeMax - FIXED.timeMin) * plotW;
+  const y = value => pad.top + plotH -
+    (value - yMin) / (yMax - yMin) * plotH;
+
+  ctx.clearRect(0, 0, W, H);
+  ctx.font = "12px Arial";
+  ctx.fillStyle = "#000";
+  ctx.strokeStyle = "#ddd";
+  ctx.lineWidth = 1;
+
+  // Fixed horizontal grid and labels
+  for (let k = 0; k <= 5; k++) {
+    const value = yMin + (yMax - yMin) * k / 5;
+    const py = y(value);
+    ctx.beginPath();
+    ctx.moveTo(pad.left, py);
+    ctx.lineTo(W - pad.right, py);
+    ctx.stroke();
+    ctx.textAlign = "right";
+    ctx.fillText(value.toFixed(0), pad.left - 8, py + 4);
+  }
+
+  // Fixed time axis
+  for (let k = 0; k <= 4; k++) {
+    const px = x(k);
+    ctx.beginPath();
+    ctx.moveTo(px, pad.top);
+    ctx.lineTo(px, H - pad.bottom);
+    ctx.stroke();
+    ctx.textAlign = "center";
+    ctx.fillText(k.toFixed(0), px, H - pad.bottom + 18);
+  }
+
+  ctx.strokeStyle = "#000";
+  ctx.beginPath();
+  ctx.moveTo(pad.left, pad.top);
+  ctx.lineTo(pad.left, H - pad.bottom);
+  ctx.lineTo(W - pad.right, H - pad.bottom);
+  ctx.stroke();
+
+  for (const s of series) {
+    ctx.strokeStyle = s.color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    let started = false;
+
+    for (let i = 0; i < times.length; i++) {
+      const px = x(times[i]);
+      const py = y(s.values[i]);
+
+      if (!Number.isFinite(py)) continue;
+
+      if (!started) {
+        ctx.moveTo(px, py);
+        started = true;
+      } else {
+        ctx.lineTo(px, py);
+      }
+    }
+    ctx.stroke();
+  }
+
+  ctx.fillStyle = "#000";
+  ctx.textAlign = "center";
+  ctx.fillText("Time (seconds)", pad.left + plotW / 2, H - 4);
+}
+
+function update() {
+  const v = readValues();
+
+  $("rVal").textContent = v.R.toFixed(1);
+  $("cVal").textContent = v.C.toFixed(1);
+  $("lVal").textContent = v.L.toFixed(2);
+  $("pvVal").textContent = v.Pv;
+  $("svVal").textContent = v.SV;
+  $("edVal").textContent = `${Math.round(v.ejectionFraction * 100)}%`;
+  $("hrVal").textContent = v.HR;
+
+  const d = simulate(v);
+
+  drawChart("pressureChart", d.t, [
+    { values: d.p2, color: "#1769aa" },
+    { values: d.p3, color: "#c62828" }
+  ], FIXED.pressureMin, FIXED.pressureMax, "Pressure");
+
+  drawChart("flowChart", d.t, [
+    { values: d.q2, color: "#1769aa" },
+    { values: d.q3, color: "#c62828" }
+  ], FIXED.flowMin, FIXED.flowMax, "Flow");
+
+  $("stats").innerHTML =
+    `<strong>Model summary</strong><br>
+     Cardiac output: ${(v.SV * v.HR / 1000).toFixed(2)} L/min<br>
+     RC time constant: ${(v.R * v.C).toFixed(2)} (model units)<br>
+     Cardiac cycle: ${(60 / v.HR).toFixed(3)} s<br>
+     Ejection duration: ${(v.ejectionFraction * 60 / v.HR).toFixed(3)} s
+     (${Math.round(v.ejectionFraction * 100)}% of cycle)<br>
+     <small>Educational lumped-parameter model; illustrative, not patient-specific.
+     Values outside the fixed graph ranges may be clipped.</small>`;
+}
+
+controls.forEach(id => $(id).addEventListener("input", update));
+window.addEventListener("resize", update);
+update();
+</script>
+</body>
+</html>
